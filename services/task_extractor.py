@@ -33,7 +33,7 @@ def extract_tasks(text: str) -> list:
         return []
 
     prompt = f"""
-Asagidaki toplanti transcriptinden yalnizca acik veya makul derecede belirgin gorevleri cikar.
+Asagidaki toplanti transcriptinden yalnizca acik veya guclu bicimde desteklenen gorevleri cikar.
 
 Kurallar:
 - Turkce uret
@@ -42,11 +42,15 @@ Kurallar:
 - Confidence dusukse yine don ama degeri dusuk olsun
 - Uydurma bilgi ekleme
 - Transcriptte olmayan tarih uretme
+- assignee yalnizca transcriptte aciksa yaz; degilse bos string don
 - due_date icin yalnizca transcriptte acik ve net bicimde gecen tarihi kullan
 - Eger tarih net degilse due_date alanini bos string "" yap
 - Gun adlarindan, baglamdan, bugunun tarihinden veya meeting_date bilgisinden tarih cikarma
 - "cuma", "persembe", "yarin", "haftaya" gibi ifadeleri transcriptte acik bir takvim tarihi yoksa ISO tarihe cevirme
 - Sadece transcriptte kesin tarih varsa due_date yaz
+- priority sadece transcriptte belirginsa doldur; degilse bos string don
+- Type alani yalnizca su degerlerden biri olsun: direct, volunteer, implicit, conditional, group
+- Ayni gorevi tekrar etme
 - JSON disinda aciklama yazma
 - Yalnizca JSON liste don
 

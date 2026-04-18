@@ -4,6 +4,7 @@ from copy import deepcopy
 from services.action_item_agent import run_action_item_agent
 from services.meeting_processor import run_transcription_agent
 from services.meeting_state import MeetingState
+from services.output_models import MeetingSummaryOutput, build_meeting_summary_output
 from services.summary_agent import run_summary_agent
 
 try:
@@ -47,10 +48,29 @@ def build_initial_state(
             "topics": [],
             "decisions": [],
         },
+        "executive_summary": "",
+        "key_decisions": [],
+        "topics": [],
         "action_items": [],
+        "frontend_summary": MeetingSummaryOutput.empty(),
         "errors": [],
         "completed": [],
     }
+
+
+def _build_frontend_summary(state: MeetingState) -> MeetingSummaryOutput:
+    return build_meeting_summary_output(
+        executive_summary=state.get("executive_summary", ""),
+        key_decisions=list(state.get("key_decisions", [])),
+        action_items=list(state.get("action_items", [])),
+        topics=list(state.get("topics", [])),
+    )
+
+
+def _finalize_state(state: MeetingState) -> MeetingState:
+    finalized = deepcopy(state)
+    finalized["frontend_summary"] = _build_frontend_summary(finalized)
+    return finalized
 
 
 def _run_parallel_agents(state: MeetingState) -> MeetingState:
@@ -67,8 +87,8 @@ def _run_parallel_agents(state: MeetingState) -> MeetingState:
 def _fallback_run(state: MeetingState) -> MeetingState:
     next_state = _merge_state(state, run_transcription_agent(state))
     if not next_state.get("transcript", "").strip():
-        return next_state
-    return _run_parallel_agents(next_state)
+        return _finalize_state(next_state)
+    return _finalize_state(_run_parallel_agents(next_state))
 
 
 def build_meeting_graph():
@@ -103,4 +123,4 @@ def run_meeting_analysis(
     graph = build_meeting_graph()
     if graph is None:
         return _fallback_run(state)
-    return graph.invoke(state)
+    return _finalize_state(graph.invoke(state))
