@@ -29,3 +29,4 @@ outputs/*
 
 # Whisper model cache
 *.pt
+.env

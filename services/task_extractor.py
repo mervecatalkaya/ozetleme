@@ -1,80 +1,114 @@
-"""
-Task Extractor Service - Görev Çıkarma
-========================================
-Transkript metninden görev cümlelerini çıkaran
-servis modülü. Performans odaklı yazılmıştır.
-"""
-
 import re
+from datetime import datetime
 
-# ─── Görev Anahtar Kelimeleri ──────────────────────────────────────────────────
-TASK_KEYWORDS = [
-    "yapılacak",
-    "yapılması gerekiyor",
-    "görev",
-    "sorumlu",
-    "kontrol edilecek",
-    "planlandı",
-    "karar verildi",
-    "yapılmalı",
-    "takip edilecek",
-    "hazırlanacak"
-]
+from services.groq_client import complete_json
+
+
+def has_explicit_date(text: str) -> bool:
+    patterns = [
+        r"\b\d{4}-\d{2}-\d{2}\b",
+        r"\b\d{1,2}[./-]\d{1,2}[./-]\d{2,4}\b",
+        r"\b\d{1,2}\s+(ocak|subat|mart|nisan|mayis|haziran|temmuz|agustos|eylul|ekim|kasim|aralik)\b",
+        r"\b\d{1,2}\s+(şubat|mayıs|ağustos|eylül|kasım|aralık)\b",
+    ]
+    lowered = text.lower()
+    return any(re.search(pattern, lowered) for pattern in patterns)
+
+
+def _normalize_due_date(value: str) -> str:
+    if not value:
+        return ""
+
+    value = value.strip()
+    for fmt in ("%Y-%m-%d", "%Y/%m/%d"):
+        try:
+            return datetime.strptime(value, fmt).strftime("%Y-%m-%d")
+        except ValueError:
+            continue
+    return value
 
 
 def extract_tasks(text: str) -> list:
-    """
-    Metinden görev cümlelerini yüksek performansla çıkarır.
-    Ağır işlemleri kısıtlar ve çok uzun metinlerde kesme yapar.
-    
-    Args:
-        text (str): Görev çıkarılacak transkript metni.
-        
-    Returns:
-        list: Bulunan görevlerin listesi. Boş ise [] döner.
-    """
-
-    # 1. Hızlı Güvenlik Kontrolü
-    if not text or len(text.strip()) < 15:
+    if not text or len(text.strip()) < 20:
         return []
 
-    # 3. Yüksek Boyutlu Metin Kesimi (Sadece ilk 5000 karakteri analiz et)
-    if len(text) > 5000:
-        text = text[:5000]
+    prompt = f"""
+Asagidaki toplanti transcriptinden yalnizca acik veya makul derecede belirgin gorevleri cikar.
 
-    text_lower = text.lower()
+Kurallar:
+- Turkce uret
+- Gorev yoksa bos liste don
+- Uydurma gorev ekleme
+- Confidence dusukse yine don ama degeri dusuk olsun
+- Uydurma bilgi ekleme
+- Transcriptte olmayan tarih uretme
+- due_date icin yalnizca transcriptte acik ve net bicimde gecen tarihi kullan
+- Eger tarih net degilse due_date alanini bos string "" yap
+- Gun adlarindan, baglamdan, bugunun tarihinden veya meeting_date bilgisinden tarih cikarma
+- "cuma", "persembe", "yarin", "haftaya" gibi ifadeleri transcriptte acik bir takvim tarihi yoksa ISO tarihe cevirme
+- Sadece transcriptte kesin tarih varsa due_date yaz
+- JSON disinda aciklama yazma
+- Yalnizca JSON liste don
 
-    # 2. Hızlı Ön Kontrol (FAST FILTER)
-    if not any(keyword in text_lower for keyword in TASK_KEYWORDS):
+Beklenen format:
+[
+  {{
+    "task": "string",
+    "assignee": "string",
+    "due_date": "string",
+    "priority": "string",
+    "confidence": 0.0,
+    "type": "string"
+  }}
+]
+
+Transcript:
+\"\"\"
+{text[:12000]}
+\"\"\"
+"""
+
+    result = complete_json(prompt, temperature=0.1)
+    if result is None:
         return []
 
-    # 5. Basit Regex ile Cümlelere Bölme (Ağır kütüphaneler yerine)
-    # Nokta, ünlem veya soru işaretinden sonra gelen boşluklardan cümleleri ayırır.
-    raw_sentences = re.split(r'[.!?]+\s+', text)
-    
+    if isinstance(result, dict):
+        if isinstance(result.get("tasks"), list):
+            raw_tasks = result["tasks"]
+        elif isinstance(result.get("action_items"), list):
+            raw_tasks = result["action_items"]
+        else:
+            return []
+    elif isinstance(result, list):
+        raw_tasks = result
+    else:
+        return []
+
     tasks = []
-    seen = set()
+    explicit_date_exists = has_explicit_date(text)
 
-    # 6. Sadece ilgili cümleleri al
-    for sentence in raw_sentences:
-        sentence = sentence.strip()
-        if len(sentence) < 5:
+    for item in raw_tasks:
+        if not isinstance(item, dict):
             continue
-            
-        sentence_lower = sentence.lower()
 
-        # Cümle içinde keyword geçiyorsa task olarak ekle
-        if any(keyword in sentence_lower for keyword in TASK_KEYWORDS):
-            normalized = " ".join(sentence_lower.split()) # Fazla boşlukları yoksay
-            
-            # 7. Tekrarlı görevleri filtrele
-            if normalized not in seen:
-                seen.add(normalized)
-                tasks.append(sentence)
+        confidence = item.get("confidence", 0.0)
+        try:
+            confidence = float(confidence)
+        except (TypeError, ValueError):
+            confidence = 0.0
 
-    # 8. Görev yoksa boş liste döndür (string mesaj yerine)
-    if not tasks:
-        return []
+        task = {
+            "task": str(item.get("task", "")).strip(),
+            "assignee": str(item.get("assignee", "")).strip(),
+            "due_date": _normalize_due_date(str(item.get("due_date", "")).strip()),
+            "priority": str(item.get("priority", "")).strip(),
+            "confidence": round(confidence, 2),
+            "type": str(item.get("type", "")).strip(),
+        }
 
-    print(f"[Task Extractor] Hızlı analiz ile {len(tasks)} görev çıkarıldı.")
+        if task["task"]:
+            if not explicit_date_exists:
+                task["due_date"] = ""
+            tasks.append(task)
+
     return tasks
